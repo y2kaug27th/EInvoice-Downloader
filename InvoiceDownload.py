@@ -1,0 +1,483 @@
+import glob
+import time
+import datetime
+import logging
+from pathlib import Path
+from contextlib import contextmanager
+
+import loginInfo
+from RecaptchaSolver import RecaptchaSolver
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select
+from selenium.common.exceptions import TimeoutException, WebDriverException
+
+
+class InvoiceDownloader:
+    """Automated invoice downloader for Taiwan e-invoice system."""
+    
+    def __init__(self, webdriver_path: str = r"chromedriver-win64\chromedriver.exe", 
+                 download_dir: str = rf"C:\Users\{loginInfo.User}\Downloads",
+                 timeout: int = 30,
+                 recaptcha_solver=None):
+        self.webdriver_path = webdriver_path
+        self.download_dir = Path(download_dir)
+        self.timeout = timeout
+        self.browser = None
+        self.recaptcha_solver = recaptcha_solver
+        
+        # Setup logging
+        logging.basicConfig(level=logging.INFO, 
+                          format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger(__name__)
+    
+    @contextmanager
+    def get_browser(self):
+        """Context manager for browser lifecycle management."""
+        try:
+            service = Service(self.webdriver_path)
+            options = self._get_chrome_options()
+            self.browser = webdriver.Chrome(service=service, options=options)
+            self.browser.implicitly_wait(self.timeout)
+            yield self.browser
+        except WebDriverException as e:
+            self.logger.error(f"Failed to initialize browser: {e}")
+            raise
+        finally:
+            if self.browser:
+                try:
+                    self.browser.quit()
+                except Exception as e:
+                    self.logger.warning(f"Error closing browser: {e}")
+    
+    def _get_chrome_options(self) -> Options:
+        """Configure Chrome options for optimal performance."""
+        options = Options()
+        
+        # Performance optimizations
+        options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        options.add_argument("--log-level=3")
+        options.add_argument("--start-maximized")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        
+        # Set download preferences
+        prefs = {
+            "download.default_directory": str(self.download_dir),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True
+        }
+        options.add_experimental_option("prefs", prefs)
+        
+        return options
+    
+    def _wait_and_click(self, locator: tuple, timeout: int = None, use_js: bool = False) -> bool:
+        """Wait for element and click it safely."""
+        timeout = timeout or self.timeout
+        try:
+            wait = WebDriverWait(self.browser, timeout)
+            element = wait.until(EC.element_to_be_clickable(locator))
+            
+            # Scroll element into view
+            self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+            time.sleep(0.5)  # Small delay for scroll
+            
+            # Try different click strategies
+            if use_js:
+                # Use JavaScript click to bypass interception
+                self.browser.execute_script("arguments[0].click();", element)
+            else:
+                try:
+                    # First try normal click
+                    element.click()
+                except Exception as e:
+                    self.logger.warning(f"Normal click failed, trying JavaScript click: {e}")
+                    # Fallback to JavaScript click
+                    self.browser.execute_script("arguments[0].click();", element)
+            
+            return True
+        except TimeoutException:
+            self.logger.error(f"Timeout waiting for element: {locator}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to click element {locator}: {e}")
+            return False
+    
+    def _safe_send_keys(self, locator: tuple, text: str, timeout: int = None) -> bool:
+        """Send keys to element safely."""
+        timeout = timeout or self.timeout
+        try:
+            wait = WebDriverWait(self.browser, timeout)
+            element = wait.until(EC.presence_of_element_located(locator))
+            element.clear()
+            element.send_keys(text)
+            return True
+        except TimeoutException:
+            self.logger.error(f"Timeout waiting for input element: {locator}")
+            return False
+    
+    def login(self) -> bool:
+        """Handle the login process."""
+        try:
+            self.browser.get("https://www.einvoice.nat.gov.tw/accounts/login")
+            self.recaptcha_solver = RecaptchaSolver(self.browser)
+            
+            # Wait for page to load completely
+            WebDriverWait(self.browser, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href^="/accounts/login/b"]'))
+            )
+            
+            # Select business login type
+            if not self._wait_and_click((By.CSS_SELECTOR, 'a[href^="/accounts/login/b"]'), use_js=True):
+                return False
+            
+            # Wait for login form to appear
+            WebDriverWait(self.browser, 10).until(
+                EC.presence_of_element_located((By.ID, "ban"))
+            )
+            
+            # Handle CAPTCHA - try automated solver first, fallback to manual input
+            if self.recaptcha_solver:
+                
+                try:
+                    self.logger.info("Attempting to solve CAPTCHA automatically...")
+                    captcha_code = self.recaptcha_solver.solveAudioCaptcha()
+                    if captcha_code:
+                        self.logger.info("CAPTCHA solved automatically")
+                except Exception as e:
+                    self.logger.warning(f"Automatic CAPTCHA solving failed: {e}")
+            
+            # Fallback to manual input if automatic solving failed
+            if not captcha_code:
+#                captcha_code = input("Please enter the Captcha code: ").strip()
+#                if not captcha_code:
+#                    self.logger.error("Captcha code is required")
+                    return False
+            
+            # Fill login form
+            login_fields = [
+                ((By.ID, "ban"), loginInfo.ban),
+                ((By.ID, "user_id"), loginInfo.user_id),
+                ((By.ID, "user_password"), loginInfo.password),
+                ((By.ID, "captcha"), captcha_code)
+            ]
+            
+            for locator, value in login_fields:
+                if not self._safe_send_keys(locator, value):
+                    return False
+            
+            # Submit login
+            if not self._wait_and_click((By.ID, 'submitBtn'), use_js=True):
+                return False
+            
+            # Wait for login to complete and page to load
+            time.sleep(1)
+            
+            # Close any popup dialogs (try multiple strategies)
+            self._dismiss_popups()
+            
+            
+            self.logger.info("Login successful")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Login failed: {e}")
+            return False
+    
+    def _dismiss_popups(self):
+        """Try to dismiss any popup dialogs that might appear."""
+        popup_selectors = [
+            'button[aria-label="Close"]',
+            '.modal-close',
+            '.close',
+            'button.btn-close',
+            '[data-dismiss="modal"]'
+        ]
+        
+        popup_texts = ['關閉', '確定', 'OK', 'Close']
+        
+        # Try CSS selectors first
+        for selector in popup_selectors:
+            try:
+                element = WebDriverWait(self.browser, 3).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                )
+                self.browser.execute_script("arguments[0].click();", element)
+                time.sleep(0.5)
+                self.logger.info(f"Closed popup with selector: {selector}")
+                return True
+            except Exception:
+                continue
+        
+        # Try text-based buttons
+        for text in popup_texts:
+            try:
+                element = WebDriverWait(self.browser, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//button[contains(text(), '{text}')]"))
+                )
+                self.browser.execute_script("arguments[0].click();", element)
+                time.sleep(0.5)
+                self.logger.info(f"Closed popup with text: {text}")
+                return True
+            except Exception:
+                continue
+        
+        # Try pressing Escape key as last resort
+        try:
+            from selenium.webdriver.common.keys import Keys
+            self.browser.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+            self.logger.info("Tried to close popup with Escape key")
+            return True
+        except Exception:
+            pass
+        
+        self.logger.info("No popup found to dismiss")
+        return True
+    
+    def navigate_to_download_page(self) -> bool:
+        """Navigate to the invoice download page."""
+        try:
+            # Wait for any overlays or loading to complete
+            
+            navigation_steps = [
+                (By.ID, 'headingFunctionB2B_MENU'),
+                (By.ID, 'headingFunctionB2BC_SINGLE_QRY_DOWN'),
+                (By.ID, 'headingFunctionBTB412W')
+            ]
+            
+            for i, locator in enumerate(navigation_steps):
+                self.logger.info(f"Clicking navigation step {i+1}: {locator[1]}")
+                
+                # Wait for element to be present and visible
+                wait = WebDriverWait(self.browser, 15)
+                element = wait.until(EC.presence_of_element_located(locator))
+                
+                # Try multiple click strategies
+                clicked = False
+                
+                # Strategy 1: JavaScript click (most reliable for intercepted elements)
+                try:
+                    self.browser.execute_script("arguments[0].click();", element)
+                    clicked = True
+                    self.logger.info(f"Successfully clicked {locator[1]} with JavaScript")
+                except Exception as e:
+                    self.logger.warning(f"JavaScript click failed for {locator[1]}: {e}")
+                
+                # Strategy 2: Action chains if JS failed
+                if not clicked:
+                    try:
+                        from selenium.webdriver.common.action_chains import ActionChains
+                        actions = ActionChains(self.browser)
+                        actions.move_to_element(element).click().perform()
+                        clicked = True
+                        self.logger.info(f"Successfully clicked {locator[1]} with ActionChains")
+                    except Exception as e:
+                        self.logger.warning(f"ActionChains click failed for {locator[1]}: {e}")
+                
+                # Strategy 3: Regular click as last resort
+                if not clicked:
+                    try:
+                        element.click()
+                        clicked = True
+                        self.logger.info(f"Successfully clicked {locator[1]} with regular click")
+                    except Exception as e:
+                        self.logger.error(f"All click strategies failed for {locator[1]}: {e}")
+                        return False
+                
+            self.logger.info("Successfully navigated to download page")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Navigation failed: {e}")
+            return False
+    
+    def configure_search_options(self) -> bool:
+        """Configure search options and filters."""
+        try:
+            # Wait for page to be ready
+            time.sleep(1)
+            
+            # Select radio buttons
+            radio_options = [
+                (By.ID, "queryInvType_1"),
+                (By.ID, "businessType_1")
+            ]
+            
+            for locator in radio_options:
+                try:
+                    wait = WebDriverWait(self.browser, 10)
+                    element = wait.until(EC.element_to_be_clickable(locator))
+                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                    time.sleep(0.5)
+                    self.browser.execute_script("arguments[0].click();", element)
+                    self.logger.info(f"Selected radio button: {locator[1]}")
+                except Exception as e:
+                    self.logger.error(f"Failed to select radio button {locator[1]}: {e}")
+                    return False
+            
+            # Click search button
+            try:
+                search_button = WebDriverWait(self.browser, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="查詢"]'))
+                )
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
+                time.sleep(0.5)
+                self.browser.execute_script("arguments[0].click();", search_button)
+                self.logger.info("Search button clicked")
+            except Exception as e:
+                self.logger.error(f"Failed to click search button: {e}")
+                return False
+            
+            # Wait for search results to load
+            time.sleep(2.5)
+            
+            # Set page size to maximum
+            try:
+                select_element = WebDriverWait(self.browser, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'select[title="分頁"]'))
+                )
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", select_element)
+                time.sleep(0.5)
+                select = Select(select_element)
+                select.select_by_value("1000")
+                self.logger.info("Page size set to 1000")
+                time.sleep(1)  # Wait for page to reload with new size
+            except TimeoutException:
+                self.logger.warning("Could not find page size selector - continuing without changing page size")
+            except Exception as e:
+                self.logger.warning(f"Could not set page size: {e}")
+            
+            self.logger.info("Search options configured successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to configure search options: {e}")
+            return False
+    
+    def download_invoices(self) -> bool:
+        """Select all invoices and download."""
+        try:
+            # Scroll to top first to ensure we can see the elements
+            self.browser.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.5)
+            
+            # Find and select all checkboxes
+            try:
+                checkbox = WebDriverWait(self.browser, 15).until(
+                    EC.presence_of_element_located((By.ID, "checkbox-all"))
+                )
+                
+                # Scroll the checkbox into view and center it
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", checkbox)
+                time.sleep(0.5)
+                
+                # Check if it's already selected
+                if not checkbox.is_selected():
+                    self.browser.execute_script("arguments[0].click();", checkbox)
+                    self.logger.info("Select all checkbox clicked")
+                else:
+                    self.logger.info("Select all checkbox already selected")
+                
+                time.sleep(0.5)
+                
+            except Exception as e:
+                self.logger.error(f"Failed to select checkbox: {e}")
+                return False
+            
+            # Find and click download button
+            try:
+                download_button = WebDriverWait(self.browser, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
+                )
+                
+                # Scroll the download button into view and center it
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", download_button)
+                time.sleep(0.5)
+                
+                # Make sure button is clickable
+                WebDriverWait(self.browser, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
+                )
+                
+                # Click using JavaScript to avoid interception
+                self.browser.execute_script("arguments[0].click();", download_button)
+                self.logger.info("Download button clicked successfully")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to click download button: {e}")
+                return False
+            
+            self.logger.info("Download initiated successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Download failed: {e}")
+            return False
+    
+    def wait_for_download(self, max_wait_time: int = 60) -> str:
+        """Wait for download to complete and return file path."""
+        prefix = f"14001199_IN_{datetime.datetime.today().strftime('%Y%m%d%H')}"
+        pattern = str(self.download_dir / f"{prefix}*.xls")
+        
+        start_time = time.time()
+        while time.time() - start_time < max_wait_time:
+            matched_files = glob.glob(pattern)
+            if matched_files:
+                file_path = matched_files[0]
+                self.logger.info(f"File downloaded successfully: {file_path}")
+                return file_path
+            time.sleep(0.5)
+        
+        self.logger.error("Download timeout - file not found")
+        return None
+    
+    def run(self) -> str:
+        """Execute the complete download process."""
+        self.logger.info("Starting invoice download process")
+        
+        with self.get_browser():
+            if not self.login():
+                raise Exception("Login failed")
+            
+            if not self.navigate_to_download_page():
+                raise Exception("Navigation failed")
+            
+            if not self.configure_search_options():
+                raise Exception("Search configuration failed")
+            
+            if not self.download_invoices():
+                raise Exception("Download initiation failed")
+            
+            downloaded_file = self.wait_for_download()
+            if not downloaded_file:
+                raise Exception("Download did not complete")
+            
+            self.logger.info("Invoice download process completed successfully")
+            return downloaded_file
+
+
+def main():
+    """Main execution function."""
+    try:
+        downloader = InvoiceDownloader()
+        result = downloader.run()
+        print(f"Success! Downloaded file: {result}")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    
+    return 0
+
+
+if __name__ == "__main__":
+    exit(main())
