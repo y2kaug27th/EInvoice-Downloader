@@ -33,8 +33,10 @@ class InvoiceDownloader:
         self.recaptcha_solver = recaptcha_solver
         
         # Setup logging
-        logging.basicConfig(level=logging.INFO, 
-                          format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=logging.INFO,
+                            filename='einvoice.log',
+                            format='%(asctime)s - %(levelname)s - %(message)s',
+                            encoding='utf-8')
         self.logger = logging.getLogger(__name__)
     
     @contextmanager
@@ -198,7 +200,11 @@ class InvoiceDownloader:
                 return False
             
             # Wait for login to complete and page to load
-            time.sleep(1)
+            time.sleep(5)
+
+            if not self.browser.current_url.startswith('https://www.einvoice.nat.gov.tw/dashboard'):
+                self.logger.error("Login verification failed.")
+                return False
             
             # Close any popup dialogs (try multiple strategies)
             self._dismiss_popups()
@@ -397,8 +403,6 @@ class InvoiceDownloader:
                 except Exception as e:
                     self.logger.warning(f"Could not verify date input value: {e}")
                 
-                self.logger.info(f"Date picker set to: {formatted_date}")
-                
             except Exception as e:
                 self.logger.error(f"Failed to set date using date picker: {e}")
                 # Try to close any open overlay
@@ -458,7 +462,6 @@ class InvoiceDownloader:
             except Exception as e:
                 self.logger.warning(f"Could not set page size: {e}")
             
-            self.logger.info(f"Search options configured successfully for {formatted_date}")
             return True
             
         except Exception as e:
@@ -515,7 +518,7 @@ class InvoiceDownloader:
                 self.logger.info("Download button clicked successfully")
 
                 # Wait for Download to complete
-                time.sleep(3)
+                time.sleep(5)
                 
             except Exception as e:
                 self.logger.error(f"Failed to click download button: {e}")
@@ -537,9 +540,9 @@ class InvoiceDownloader:
         while time.time() - start_time < max_wait_time:
             matched_files = glob.glob(pattern)
             if len(matched_files) >= 2:
-                for file_path in matched_files:
-                    self.logger.info(f"Found the matching files: {file_path}")
-                return file_path
+                for i in range(1,3):
+                    self.logger.info(f"Found the matching files: {matched_files[-i]}")
+                return matched_files
             time.sleep(0.5)
         
         self.logger.error("Download timeout - files not found")
@@ -582,7 +585,6 @@ class InvoiceDownloader:
             if not downloaded_file:
                 raise Exception("Download did not complete.")
             
-            self.logger.info("Invoice download process completed successfully")
             return downloaded_file
 
 
@@ -591,10 +593,10 @@ def main():
     try:
         downloader = InvoiceDownloader()
         downloader.run()
-        print("EInvoice Downloader Success!")
+        downloader.logger.info("EInvoice Downloader Success!")
         
     except Exception as e:
-        print(f"Error: {e}")
+        downloader.logger.error(f"Error: {e}")
         return 1
     
     return 0
