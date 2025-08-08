@@ -4,6 +4,7 @@ import datetime
 import logging
 from pathlib import Path
 from contextlib import contextmanager
+from typing import List, Tuple
 
 import loginInfo
 from RecaptchaSolver import RecaptchaSolver
@@ -123,6 +124,24 @@ class InvoiceDownloader:
         except TimeoutException:
             self.logger.error(f"Timeout waiting for input element: {locator}")
             return False
+        
+    def _get_target_months(self) -> List[Tuple[datetime.datetime, str]]:
+        """Get the current month and previous month with formatted strings."""
+        now = datetime.datetime.now()
+        current_month = now
+        
+        # Calculate previous month
+        if now.month == 1:
+            previous_month = now.replace(year=now.year - 1, month=12)
+        else:
+            previous_month = now.replace(month=now.month - 1)
+        
+        months = [
+            (previous_month, f"{previous_month.year}年{previous_month.month}月"),
+            (current_month, f"{current_month.year}年{current_month.month}月")
+        ]
+        
+        return months
     
     def login(self) -> bool:
         """Handle the login process."""
@@ -300,11 +319,94 @@ class InvoiceDownloader:
             self.logger.error(f"Navigation failed: {e}")
             return False
     
-    def configure_search_options(self) -> bool:
-        """Configure search options and filters."""
+    def configure_search_options(self, month_date: datetime.datetime, formatted_date: str) -> bool:
+        """Configure search options and filters for a specific month."""
         try:
             # Wait for page to be ready
             time.sleep(1)
+            
+            # Set the date input to specified month using the date picker
+            try:
+                # Find and click the date input field to open the picker
+                date_input = WebDriverWait(self.browser, 10).until(
+                    EC.element_to_be_clickable((By.ID, "dp-input-date01"))
+                )
+                
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", date_input)
+                time.sleep(0.5)
+                
+                # Click to open the date picker overlay
+                self.browser.execute_script("arguments[0].click();", date_input)
+                self.logger.info("Date picker opened")
+                time.sleep(0.5)
+                
+                # Wait for the overlay to appear
+                WebDriverWait(self.browser, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".dp__overlay.dp--overlay-relative"))
+                )
+                
+                # Check if we need to change the year first
+                current_year_button = self.browser.find_element(By.CSS_SELECTOR, ".dp__btn.dp--year-select")
+                current_year_text = current_year_button.text.strip()
+                target_year = f"{month_date.year}年"
+                
+                if current_year_text != target_year:
+                    self.logger.info(f"Need to change year from {current_year_text} to {target_year}")
+                    
+                    # Click on year to enter year selection mode
+                    self.browser.execute_script("arguments[0].click();", current_year_button)
+                    time.sleep(0.5)
+                    
+                    # Navigate to the correct year using arrow buttons
+                    current_year_num = int(current_year_text.replace('年', ''))
+                    target_year_num = month_date.year
+                    
+                    if target_year_num < current_year_num:
+                        # Click previous year button
+                        for _ in range(current_year_num - target_year_num):
+                            prev_year_btn = self.browser.find_element(By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Previous year']")
+                            self.browser.execute_script("arguments[0].click();", prev_year_btn)
+                            time.sleep(0.3)
+                    elif target_year_num > current_year_num:
+                        # Click next year button
+                        for _ in range(target_year_num - current_year_num):
+                            next_year_btn = self.browser.find_element(By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Next year']")
+                            self.browser.execute_script("arguments[0].click();", next_year_btn)
+                            time.sleep(0.3)
+                
+                # Now select the correct month
+                target_month_text = f"{month_date.month}月"
+                
+                # Find and click the target month cell
+                month_cell = WebDriverWait(self.browser, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, f'div[data-test="{target_month_text}"]'))
+                )
+                
+                self.browser.execute_script("arguments[0].click();", month_cell)
+                self.logger.info(f"Selected month: {target_month_text}")
+                time.sleep(0.5)
+                
+                # The overlay should close automatically after selection
+                # Wait a moment to ensure the selection is registered
+                time.sleep(0.5)
+                
+                # Verify the selection was successful by checking the input value
+                try:
+                    updated_value = date_input.get_attribute("value")
+                    self.logger.info(f"Date input updated to: {updated_value}")
+                except Exception as e:
+                    self.logger.warning(f"Could not verify date input value: {e}")
+                
+                self.logger.info(f"Date picker set to: {formatted_date}")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to set date using date picker: {e}")
+                # Try to close any open overlay
+                try:
+                    self.browser.execute_script("document.body.click();")
+                except Exception:
+                    pass
+                return False
             
             # Select radio buttons
             radio_options = [
@@ -356,7 +458,7 @@ class InvoiceDownloader:
             except Exception as e:
                 self.logger.warning(f"Could not set page size: {e}")
             
-            self.logger.info("Search options configured successfully")
+            self.logger.info(f"Search options configured successfully for {formatted_date}")
             return True
             
         except Exception as e:
@@ -411,6 +513,9 @@ class InvoiceDownloader:
                 # Click using JavaScript to avoid interception
                 self.browser.execute_script("arguments[0].click();", download_button)
                 self.logger.info("Download button clicked successfully")
+
+                # Wait for Download to complete
+                time.sleep(3)
                 
             except Exception as e:
                 self.logger.error(f"Failed to click download button: {e}")
@@ -431,13 +536,13 @@ class InvoiceDownloader:
         start_time = time.time()
         while time.time() - start_time < max_wait_time:
             matched_files = glob.glob(pattern)
-            if matched_files:
-                file_path = matched_files[0]
-                self.logger.info(f"File downloaded successfully: {file_path}")
+            if len(matched_files) >= 2:
+                for file_path in matched_files:
+                    self.logger.info(f"Found the matching files: {file_path}")
                 return file_path
             time.sleep(0.5)
         
-        self.logger.error("Download timeout - file not found")
+        self.logger.error("Download timeout - files not found")
         return None
     
     def run(self) -> str:
@@ -451,15 +556,31 @@ class InvoiceDownloader:
             if not self.navigate_to_download_page():
                 raise Exception("Navigation failed")
             
-            if not self.configure_search_options():
-                raise Exception("Search configuration failed")
+            # Get target months (previous and current)
+            target_months = self._get_target_months()
+
+            for i, (month_date, formatted_date) in enumerate(target_months):
+                self.logger.info(f"Processing month {i+1}/2: {formatted_date}")
+                
+                # For subsequent months, we need to refresh the page or reset the form
+                if i > 0:
+                    self.logger.info("Refreshing page for next month...")
+                    self.browser.refresh()
+                    time.sleep(2)
             
-            if not self.download_invoices():
-                raise Exception("Download initiation failed")
+            # Configure search for this specific month
+                if not self.configure_search_options(month_date, formatted_date):
+                    self.logger.error(f"Search configuration failed for {formatted_date}")
+                    continue
+                
+                # Download invoices for this month
+                if not self.download_invoices():
+                    self.logger.error(f"Download initiation failed for {formatted_date}")
+                    continue
             
             downloaded_file = self.wait_for_download()
             if not downloaded_file:
-                raise Exception("Download did not complete")
+                raise Exception("Download did not complete.")
             
             self.logger.info("Invoice download process completed successfully")
             return downloaded_file
@@ -469,8 +590,8 @@ def main():
     """Main execution function."""
     try:
         downloader = InvoiceDownloader()
-        result = downloader.run()
-        print(f"Success! Downloaded file: {result}")
+        downloader.run()
+        print("EInvoice Downloader Success!")
         
     except Exception as e:
         print(f"Error: {e}")
