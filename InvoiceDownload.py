@@ -70,13 +70,17 @@ class InvoiceDownloader:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
+        options.add_argument("--disable-web-security")
+        options.add_argument("--allow-running-insecure-content")
         
         # Set download preferences
         prefs = {
             "download.default_directory": str(self.download_dir),
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
-            "safebrowsing.enabled": True
+            "safebrowsing.enabled": True,
+            "profile.default_content_settings.popups": 0,
+            "profile.default_content_setting_values.automatic_downloads": 1 
         }
         options.add_experimental_option("prefs", prefs)
         
@@ -469,62 +473,91 @@ class InvoiceDownloader:
             return False
     
     def download_invoices(self) -> bool:
-        """Select all invoices and download."""
+        """Select all invoices and download from all pages."""
         try:
-            # Scroll to top first to ensure we can see the elements
-            self.browser.execute_script("window.scrollTo(0, 0);")
-            time.sleep(0.5)
+            page_count = 0
+            total_downloads = 0
             
-            # Find and select all checkboxes
-            try:
-                checkbox = WebDriverWait(self.browser, 15).until(
-                    EC.presence_of_element_located((By.ID, "checkbox-all"))
-                )
+            while True:
+                page_count += 1
+                self.logger.info(f"Processing page {page_count}")
                 
-                # Scroll the checkbox into view and center it
-                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", checkbox)
+                # Scroll to top first to ensure we can see the elements
+                self.browser.execute_script("window.scrollTo(0, 0);")
                 time.sleep(0.5)
                 
-                # Check if it's already selected
-                if not checkbox.is_selected():
-                    self.browser.execute_script("arguments[0].click();", checkbox)
-                    self.logger.info("Select all checkbox clicked")
-                else:
-                    self.logger.info("Select all checkbox already selected")
+                # Find and select all checkboxes on current page
+                try:
+                    checkbox = WebDriverWait(self.browser, 15).until(
+                        EC.presence_of_element_located((By.ID, "checkbox-all"))
+                    )
+                    
+                    # Scroll the checkbox into view and center it
+                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", checkbox)
+                    time.sleep(0.5)
+                    
+                    # Check if it's already selected
+                    if not checkbox.is_selected():
+                        self.browser.execute_script("arguments[0].click();", checkbox)
+                        self.logger.info(f"Select all checkbox clicked on page {page_count}")
+                    else:
+                        self.logger.info(f"Select all checkbox already selected on page {page_count}")
+                    
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to select checkbox on page {page_count}: {e}")
+                    return False
                 
-                time.sleep(0.5)
-                
-            except Exception as e:
-                self.logger.error(f"Failed to select checkbox: {e}")
-                return False
-            
-            # Find and click download button
-            try:
-                download_button = WebDriverWait(self.browser, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
-                )
-                
-                # Scroll the download button into view and center it
-                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", download_button)
-                time.sleep(0.5)
-                
-                # Make sure button is clickable
-                WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
-                )
-                
-                # Click using JavaScript to avoid interception
-                self.browser.execute_script("arguments[0].click();", download_button)
-                self.logger.info("Download button clicked successfully")
+                # Find and click download button for current page
+                try:
+                    download_button = WebDriverWait(self.browser, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
+                    )
+                    
+                    # Scroll the download button into view and center it
+                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", download_button)
+                    time.sleep(0.5)
+                    
+                    # Make sure button is clickable
+                    WebDriverWait(self.browser, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
+                    )
+                    
+                    # Click using JavaScript to avoid interception
+                    self.browser.execute_script("arguments[0].click();", download_button)
+                    self.logger.info(f"Download button clicked successfully on page {page_count}")
+                    total_downloads += 1
 
-                # Wait for Download to complete
-                time.sleep(5)
+                    # Wait for Download to complete
+                    time.sleep(5)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to click download button on page {page_count}: {e}")
+                    return False
                 
-            except Exception as e:
-                self.logger.error(f"Failed to click download button: {e}")
-                return False
+                # Check if there's a next page
+                try:
+                    next_button = WebDriverWait(self.browser, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'button[title="下一頁"]'))
+                    )
+                    
+                    # Check if next button is disabled (no more pages)
+                    if next_button.get_attribute('disabled'):
+                        self.logger.info(f"No more pages. Completed processing {page_count} pages")
+                        break
+                    else:
+                        # Click next page button
+                        self.browser.execute_script("arguments[0].click();", next_button)
+                        self.logger.info(f"Moving to page {page_count + 1}")
+                        time.sleep(2)  # Wait for page to load
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to check next page button on page {page_count}: {e}")
+                    # If we can't find the next button, assume we're done
+                    break
             
-            self.logger.info("Download initiated successfully")
+            self.logger.info(f"Download process completed successfully. Total pages processed: {page_count}, Total downloads: {total_downloads}")
             return True
             
         except Exception as e:
@@ -540,8 +573,8 @@ class InvoiceDownloader:
         while time.time() - start_time < max_wait_time:
             matched_files = glob.glob(pattern)
             if len(matched_files) >= 2:
-                for i in range(1,3):
-                    self.logger.info(f"Found the matching files: {matched_files[-i]}")
+                for i in range(0,len(matched_files)):
+                    self.logger.info(f"Found the matching files: {matched_files[i]}")
                 return matched_files
             time.sleep(0.5)
         
@@ -571,7 +604,7 @@ class InvoiceDownloader:
                     self.browser.refresh()
                     time.sleep(2)
             
-            # Configure search for this specific month
+                # Configure search for this specific month
                 if not self.configure_search_options(month_date, formatted_date):
                     self.logger.error(f"Search configuration failed for {formatted_date}")
                     continue
@@ -580,7 +613,7 @@ class InvoiceDownloader:
                 if not self.download_invoices():
                     self.logger.error(f"Download initiation failed for {formatted_date}")
                     continue
-            
+
             downloaded_file = self.wait_for_download()
             if not downloaded_file:
                 raise Exception("Download did not complete.")
