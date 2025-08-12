@@ -30,6 +30,7 @@ class InvoiceDownloader:
         self.download_dir = Path(download_dir)
         self.timeout = timeout
         self.browser = None
+        self.total_downloads = 0
         self.recaptcha_solver = recaptcha_solver
         
         # Setup logging
@@ -135,17 +136,18 @@ class InvoiceDownloader:
         """Get the current month and previous month with formatted strings."""
         now = datetime.datetime.now()
         current_month = now
+        previous_month = None
         
+        if now.day <= 7:
         # Calculate previous month
-        if now.month == 1:
-            previous_month = now.replace(year=now.year - 1, month=12)
-        else:
-            previous_month = now.replace(month=now.month - 1)
+            if now.month == 1:
+                previous_month = now.replace(year=now.year - 1, month=12)
+            else:
+                previous_month = now.replace(month=now.month - 1)
         
-        months = [
-            (previous_month, f"{previous_month.year}年{previous_month.month}月"),
-            (current_month, f"{current_month.year}年{current_month.month}月")
-        ]
+        months = [(current_month, f"{current_month.year}年{current_month.month}月")]
+        if previous_month:
+            months.insert(0, (previous_month, f"{previous_month.year}年{previous_month.month}月"))
         
         return months
     
@@ -476,7 +478,6 @@ class InvoiceDownloader:
         """Select all invoices and download from all pages."""
         try:
             page_count = 0
-            total_downloads = 0
             
             while True:
                 page_count += 1
@@ -527,7 +528,7 @@ class InvoiceDownloader:
                     # Click using JavaScript to avoid interception
                     self.browser.execute_script("arguments[0].click();", download_button)
                     self.logger.info(f"Download button clicked successfully on page {page_count}")
-                    total_downloads += 1
+                    self.total_downloads += 1
 
                     # Wait for Download to complete
                     time.sleep(5)
@@ -557,7 +558,7 @@ class InvoiceDownloader:
                     # If we can't find the next button, assume we're done
                     break
             
-            self.logger.info(f"Download process completed successfully. Total pages processed: {page_count}, Total downloads: {total_downloads}")
+            self.logger.info(f"Download process completed successfully. Total pages processed: {page_count}, Total downloads: {self.total_downloads}")
             return True
             
         except Exception as e:
@@ -572,9 +573,10 @@ class InvoiceDownloader:
         start_time = time.time()
         while time.time() - start_time < max_wait_time:
             matched_files = glob.glob(pattern)
-            if len(matched_files) >= 2:
-                for i in range(0,len(matched_files)):
-                    self.logger.info(f"Found the matching files: {matched_files[i]}")
+            if len(matched_files) >= self.total_downloads:
+                download_files = matched_files[-self.total_downloads:]
+                for file in download_files:
+                    self.logger.info(f"Found the matching files: {file}")
                 return matched_files
             time.sleep(0.5)
         
