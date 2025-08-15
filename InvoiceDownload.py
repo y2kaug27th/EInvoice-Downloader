@@ -160,7 +160,7 @@ class InvoiceDownloader:
         old_files = glob.glob(self.pattern)
         
         if not old_files:
-            self.logger.info("No files to clean up")
+            self.logger.info("No file to clean up")
             return True
         
         success_count = 0
@@ -200,8 +200,8 @@ class InvoiceDownloader:
             )
             
             # Handle CAPTCHA - try automated solver first, fallback to manual input
+            captcha_code = None
             if self.recaptcha_solver:
-                
                 try:
                     self.logger.info("Attempting to solve CAPTCHA automatically...")
                     captcha_code = self.recaptcha_solver.solveAudioCaptcha()
@@ -229,7 +229,6 @@ class InvoiceDownloader:
                 if not self._safe_send_keys(locator, value):
                     return False
             
-            # Submit login
             if not self._wait_and_click((By.ID, 'submitBtn'), use_js=True):
                 return False
             
@@ -240,9 +239,8 @@ class InvoiceDownloader:
                 self.logger.error("Login verification failed")
                 return False
             
-            # Close any popup dialogs (try multiple strategies)
+            # Close any popup dialogs
             self._dismiss_popups()
-            
             
             self.logger.info("Login successful")
             return True
@@ -263,31 +261,15 @@ class InvoiceDownloader:
         
         popup_texts = ['關閉', '確定', 'OK', 'Close']
         
-        # Try CSS selectors first
         for selector in popup_selectors:
-            try:
-                element = WebDriverWait(self.browser, 3).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                )
-                self.browser.execute_script("arguments[0].click();", element)
-                time.sleep(0.5)
+            if self._wait_and_click((By.CSS_SELECTOR, selector), use_js=True):
                 self.logger.info(f"Closed popup with selector: {selector}")
                 return True
-            except Exception:
-                continue
         
-        # Try text-based buttons
         for text in popup_texts:
-            try:
-                element = WebDriverWait(self.browser, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, f"//button[contains(text(), '{text}')]"))
-                )
-                self.browser.execute_script("arguments[0].click();", element)
-                time.sleep(0.5)
+            if self._wait_and_click((By.XPATH, f"//button[contains(text(), '{text}')]"), use_js=True):
                 self.logger.info(f"Closed popup with text: {text}")
                 return True
-            except Exception:
-                continue
         
         # Try pressing Escape key as last resort
         try:
@@ -305,8 +287,6 @@ class InvoiceDownloader:
     def navigate_to_download_page(self) -> bool:
         """Navigate to the invoice download page."""
         try:
-            # Wait for any overlays or loading to complete
-            
             navigation_steps = [
                 (By.ID, 'headingFunctionB2B_MENU'),
                 (By.ID, 'headingFunctionB2BC_SINGLE_QRY_DOWN'),
@@ -316,42 +296,12 @@ class InvoiceDownloader:
             for i, locator in enumerate(navigation_steps):
                 self.logger.info(f"Clicking navigation step {i+1}: {locator[1]}")
                 
-                # Wait for element to be present and visible
-                wait = WebDriverWait(self.browser, 15)
-                element = wait.until(EC.presence_of_element_located(locator))
+                if not self._wait_and_click(locator, use_js=True):
+                    self.logger.error(f"Failed to click navigation step {i+1}: {locator[1]}")
+                    return False
                 
-                # Try multiple click strategies
-                clicked = False
-                
-                # Strategy 1: JavaScript click (most reliable for intercepted elements)
-                try:
-                    self.browser.execute_script("arguments[0].click();", element)
-                    clicked = True
-                    self.logger.info(f"Successfully clicked {locator[1]} with JavaScript")
-                except Exception as e:
-                    self.logger.warning(f"JavaScript click failed for {locator[1]}: {e}")
-                
-                # Strategy 2: Action chains if JS failed
-                if not clicked:
-                    try:
-                        from selenium.webdriver.common.action_chains import ActionChains
-                        actions = ActionChains(self.browser)
-                        actions.move_to_element(element).click().perform()
-                        clicked = True
-                        self.logger.info(f"Successfully clicked {locator[1]} with ActionChains")
-                    except Exception as e:
-                        self.logger.warning(f"ActionChains click failed for {locator[1]}: {e}")
-                
-                # Strategy 3: Regular click as last resort
-                if not clicked:
-                    try:
-                        element.click()
-                        clicked = True
-                        self.logger.info(f"Successfully clicked {locator[1]} with regular click")
-                    except Exception as e:
-                        self.logger.error(f"All click strategies failed for {locator[1]}: {e}")
-                        return False
-                
+                self.logger.info(f"Successfully clicked {locator[1]}")
+            
             self.logger.info("Successfully navigated to download page")
             return True
             
@@ -367,16 +317,10 @@ class InvoiceDownloader:
             
             # Set the date input to specified month using the date picker
             try:
-                # Find and click the date input field to open the picker
-                date_input = WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((By.ID, "dp-input-date01"))
-                )
+                # Click the date input field to open the picker
+                if not self._wait_and_click((By.ID, "dp-input-date01"), use_js=True):
+                    return False
                 
-                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", date_input)
-                time.sleep(0.5)
-                
-                # Click to open the date picker overlay
-                self.browser.execute_script("arguments[0].click();", date_input)
                 self.logger.info("Date picker opened")
                 time.sleep(0.5)
                 
@@ -393,8 +337,9 @@ class InvoiceDownloader:
                 if current_year_text != target_year:
                     self.logger.info(f"Need to change year from {current_year_text} to {target_year}")
                     
-                    # Click on year to enter year selection mode
-                    self.browser.execute_script("arguments[0].click();", current_year_button)
+                    if not self._wait_and_click((By.CSS_SELECTOR, ".dp__btn.dp--year-select"), use_js=True):
+                        return False
+                    
                     time.sleep(0.5)
                     
                     # Navigate to the correct year using arrow buttons
@@ -404,34 +349,28 @@ class InvoiceDownloader:
                     if target_year_num < current_year_num:
                         # Click previous year button
                         for _ in range(current_year_num - target_year_num):
-                            prev_year_btn = self.browser.find_element(By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Previous year']")
-                            self.browser.execute_script("arguments[0].click();", prev_year_btn)
+                            if not self._wait_and_click((By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Previous year']"), use_js=True):
+                                return False
                             time.sleep(0.3)
                     elif target_year_num > current_year_num:
                         # Click next year button
                         for _ in range(target_year_num - current_year_num):
-                            next_year_btn = self.browser.find_element(By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Next year']")
-                            self.browser.execute_script("arguments[0].click();", next_year_btn)
+                            if not self._wait_and_click((By.CSS_SELECTOR, ".dp__btn.dp--arrow-btn-nav[aria-label='Next year']"), use_js=True):
+                                return False
                             time.sleep(0.3)
                 
                 # Now select the correct month
                 target_month_text = f"{month_date.month}月"
                 
-                # Find and click the target month cell
-                month_cell = WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, f'div[data-test="{target_month_text}"]'))
-                )
+                if not self._wait_and_click((By.CSS_SELECTOR, f'div[data-test="{target_month_text}"]'), use_js=True):
+                    return False
                 
-                self.browser.execute_script("arguments[0].click();", month_cell)
                 self.logger.info(f"Selected month: {target_month_text}")
-                time.sleep(0.5)
-                
-                # The overlay should close automatically after selection
-                # Wait a moment to ensure the selection is registered
                 time.sleep(0.5)
                 
                 # Verify the selection was successful by checking the input value
                 try:
+                    date_input = self.browser.find_element(By.ID, "dp-input-date01")
                     updated_value = date_input.get_attribute("value")
                     self.logger.info(f"Date input updated to: {updated_value}")
                 except Exception as e:
@@ -446,36 +385,22 @@ class InvoiceDownloader:
                     pass
                 return False
             
-            # Select radio buttons
             radio_options = [
                 (By.ID, "queryInvType_1"),
                 (By.ID, "businessType_1")
             ]
             
             for locator in radio_options:
-                try:
-                    wait = WebDriverWait(self.browser, 10)
-                    element = wait.until(EC.element_to_be_clickable(locator))
-                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                    time.sleep(0.5)
-                    self.browser.execute_script("arguments[0].click();", element)
-                    self.logger.info(f"Selected radio button: {locator[1]}")
-                except Exception as e:
-                    self.logger.error(f"Failed to select radio button {locator[1]}: {e}")
+                if not self._wait_and_click(locator, use_js=True):
+                    self.logger.error(f"Failed to select radio button {locator[1]}")
                     return False
+                self.logger.info(f"Selected radio button: {locator[1]}")
             
-            # Click search button
-            try:
-                search_button = WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="查詢"]'))
-                )
-                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
-                time.sleep(0.5)
-                self.browser.execute_script("arguments[0].click();", search_button)
-                self.logger.info("Search button clicked")
-            except Exception as e:
-                self.logger.error(f"Failed to click search button: {e}")
+            if not self._wait_and_click((By.CSS_SELECTOR, 'button[title="查詢"]'), use_js=True):
+                self.logger.error("Failed to click search button")
                 return False
+            
+            self.logger.info("Search button clicked")
             
             # Wait for search results to load
             time.sleep(2.5)
@@ -515,19 +440,16 @@ class InvoiceDownloader:
                 self.browser.execute_script("window.scrollTo(0, 0);")
                 time.sleep(0.5)
                 
-                # Find and select all checkboxes on current page
                 try:
+                    # Check if checkbox is already selected first
                     checkbox = WebDriverWait(self.browser, 15).until(
                         EC.presence_of_element_located((By.ID, "checkbox-all"))
                     )
                     
-                    # Scroll the checkbox into view and center it
-                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", checkbox)
-                    time.sleep(0.5)
-                    
-                    # Check if it's already selected
                     if not checkbox.is_selected():
-                        self.browser.execute_script("arguments[0].click();", checkbox)
+                        if not self._wait_and_click((By.ID, "checkbox-all"), use_js=True):
+                            self.logger.error(f"Failed to click select all checkbox on page {page_count}")
+                            return False
                         self.logger.info(f"Select all checkbox clicked on page {page_count}")
                     else:
                         self.logger.info(f"Select all checkbox already selected on page {page_count}")
@@ -535,35 +457,18 @@ class InvoiceDownloader:
                     time.sleep(0.5)
                     
                 except Exception as e:
-                    self.logger.error(f"Failed to select checkbox on page {page_count}: {e}")
+                    self.logger.error(f"Failed to handle checkbox on page {page_count}: {e}")
                     return False
                 
-                # Find and click download button for current page
-                try:
-                    download_button = WebDriverWait(self.browser, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
-                    )
-                    
-                    # Scroll the download button into view and center it
-                    self.browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", download_button)
-                    time.sleep(0.5)
-                    
-                    # Make sure button is clickable
-                    WebDriverWait(self.browser, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'))
-                    )
-                    
-                    # Click using JavaScript to avoid interception
-                    self.browser.execute_script("arguments[0].click();", download_button)
-                    self.logger.info(f"Download button clicked successfully on page {page_count}")
-                    self.total_downloads += 1
-
-                    # Wait for Download to complete
-                    time.sleep(5)
-                    
-                except Exception as e:
-                    self.logger.error(f"Failed to click download button on page {page_count}: {e}")
+                if not self._wait_and_click((By.CSS_SELECTOR, 'button[title="下載Excel檔"]'), use_js=True):
+                    self.logger.error(f"Failed to click download button on page {page_count}")
                     return False
+                
+                self.logger.info(f"Download button clicked successfully on page {page_count}")
+                self.total_downloads += 1
+
+                # Wait for Download to complete
+                time.sleep(5)
                 
                 # Check if there's a next page
                 try:
@@ -573,11 +478,13 @@ class InvoiceDownloader:
                     
                     # Check if next button is disabled (no more pages)
                     if next_button.get_attribute('disabled'):
-                        self.logger.info(f"No more pages. Completed processing {page_count} pages")
+                        self.logger.info(f"No more pages. Completed processing {page_count} page(s)")
                         break
                     else:
-                        # Click next page button
-                        self.browser.execute_script("arguments[0].click();", next_button)
+                        if not self._wait_and_click((By.CSS_SELECTOR, 'button[title="下一頁"]'), use_js=True):
+                            self.logger.error(f"Failed to click next page button on page {page_count}")
+                            break
+                        
                         self.logger.info(f"Moving to page {page_count + 1}")
                         time.sleep(2)  # Wait for page to load
                         
@@ -622,7 +529,7 @@ class InvoiceDownloader:
             target_months = self._get_target_months()
 
             if not self.cleanup_old_files():
-                raise Exception("Clanup failed")
+                raise Exception("Cleanup failed")
 
             for i, (month_date, formatted_date) in enumerate(target_months):
                 self.logger.info(f"Processing month {i+1}: {formatted_date}")
