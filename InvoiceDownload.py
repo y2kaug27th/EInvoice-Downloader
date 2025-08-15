@@ -25,7 +25,7 @@ class InvoiceDownloader:
     
     def __init__(self, webdriver_path: str = r"chromedriver-win64\chromedriver.exe", 
                  download_dir: str = rf"C:\Users\{loginInfo.User}\Downloads",
-                 prefix: str = f"14001199_IN_{datetime.datetime.today().strftime('%Y%m%d')}",
+                 prefix: str = f"{loginInfo.ban}_IN_{datetime.datetime.today().strftime('%Y%m%d')}",
                  timeout: int = 30,
                  recaptcha_solver=None):
         self.webdriver_path = webdriver_path
@@ -600,7 +600,7 @@ class InvoiceDownloader:
             matched_files = glob.glob(self.pattern)
             if len(matched_files) == self.total_downloads:
                 for file in matched_files:
-                    self.logger.info(f"Found the matching files: {os.path.basename(file)}")
+                    self.logger.info(f"Found the matching file: {os.path.basename(file)}")
                 return matched_files
             time.sleep(0.5)
         
@@ -655,10 +655,10 @@ def main():
     try:
         downloader = InvoiceDownloader()
         downloader.run()
-        downloader.logger.info("EInvoice Downloader Success!")
+        downloader.logger.info("EInvoice Downloader Success!\n")
         
     except Exception as e:
-        downloader.logger.error(f"Error: {e}")
+        downloader.logger.error(f"Error: {e}\n")
         return 1
     
     return 0
