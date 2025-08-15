@@ -2,6 +2,7 @@ import glob
 import time
 import datetime
 import logging
+import os
 from pathlib import Path
 from contextlib import contextmanager
 from typing import List, Tuple
@@ -24,6 +25,7 @@ class InvoiceDownloader:
     
     def __init__(self, webdriver_path: str = r"chromedriver-win64\chromedriver.exe", 
                  download_dir: str = rf"C:\Users\{loginInfo.User}\Downloads",
+                 prefix: str = f"14001199_IN_{datetime.datetime.today().strftime('%Y%m%d')}",
                  timeout: int = 30,
                  recaptcha_solver=None):
         self.webdriver_path = webdriver_path
@@ -31,6 +33,8 @@ class InvoiceDownloader:
         self.timeout = timeout
         self.browser = None
         self.total_downloads = 0
+        self.prefix = prefix
+        self.pattern = str(self.download_dir / f"{self.prefix}*.xls")
         self.recaptcha_solver = recaptcha_solver
         
         # Setup logging
@@ -151,6 +155,30 @@ class InvoiceDownloader:
         
         return months
     
+    def cleanup_old_files(self) -> bool:
+        """Cleanup files matching the pattern."""
+        old_files = glob.glob(self.pattern)
+        
+        if not old_files:
+            self.logger.info("No files to clean up")
+            return True
+        
+        success_count = 0
+        for file in old_files:
+            try:
+                os.remove(file)
+                self.logger.info(f"Cleanup old file: {os.path.basename(file)}")
+                success_count += 1
+            except OSError as e:
+                self.logger.warning(f"Failed to delete {os.path.basename(file)}: {e}")
+        
+        if success_count == len(old_files):
+            self.logger.info(f"Successfully cleanup {success_count} file(s)")
+            return True
+        else:
+            self.logger.warning(f"Partially cleanup: {success_count}/{len(old_files)} file(s) deleted")
+            return False
+
     def login(self) -> bool:
         """Handle the login process."""
         try:
@@ -209,7 +237,7 @@ class InvoiceDownloader:
             time.sleep(5)
 
             if not self.browser.current_url.startswith('https://www.einvoice.nat.gov.tw/dashboard'):
-                self.logger.error("Login verification failed.")
+                self.logger.error("Login verification failed")
                 return False
             
             # Close any popup dialogs (try multiple strategies)
@@ -473,7 +501,7 @@ class InvoiceDownloader:
         except Exception as e:
             self.logger.error(f"Failed to configure search options: {e}")
             return False
-    
+
     def download_invoices(self) -> bool:
         """Select all invoices and download from all pages."""
         try:
@@ -558,7 +586,6 @@ class InvoiceDownloader:
                     # If we can't find the next button, assume we're done
                     break
             
-            self.logger.info(f"Download process completed successfully. Total pages processed: {page_count}, Total downloads: {self.total_downloads}")
             return True
             
         except Exception as e:
@@ -567,16 +594,13 @@ class InvoiceDownloader:
     
     def wait_for_download(self, max_wait_time: int = 60) -> str:
         """Wait for download to complete and return file path."""
-        prefix = f"14001199_IN_{datetime.datetime.today().strftime('%Y%m%d%H')}"
-        pattern = str(self.download_dir / f"{prefix}*.xls")
         
         start_time = time.time()
         while time.time() - start_time < max_wait_time:
-            matched_files = glob.glob(pattern)
-            if len(matched_files) >= self.total_downloads:
-                download_files = matched_files[-self.total_downloads:]
-                for file in download_files:
-                    self.logger.info(f"Found the matching files: {file}")
+            matched_files = glob.glob(self.pattern)
+            if len(matched_files) == self.total_downloads:
+                for file in matched_files:
+                    self.logger.info(f"Found the matching files: {os.path.basename(file)}")
                 return matched_files
             time.sleep(0.5)
         
@@ -597,8 +621,11 @@ class InvoiceDownloader:
             # Get target months (previous and current)
             target_months = self._get_target_months()
 
+            if not self.cleanup_old_files():
+                raise Exception("Clanup failed")
+
             for i, (month_date, formatted_date) in enumerate(target_months):
-                self.logger.info(f"Processing month {i+1}/2: {formatted_date}")
+                self.logger.info(f"Processing month {i+1}: {formatted_date}")
                 
                 # For subsequent months, we need to refresh the page or reset the form
                 if i > 0:
