@@ -406,7 +406,18 @@ class InvoiceDownloader:
             self.logger.info("Search button clicked")
             
             # Wait for search results to load
-            time.sleep(2.5)
+            try:
+                WebDriverWait(self.browser, 2.5).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//span[text()='查詢成功。']")
+                    )
+                )
+
+            except TimeoutException:
+                self.logger.info(
+                    f"No result for {month_date.year}年 {month_date.month}月"
+                )
+                return False
             
             # Set page size to maximum
             try:
